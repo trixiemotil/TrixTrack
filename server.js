@@ -2,19 +2,62 @@ const express = require('express');
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
 const crypto = require('node:crypto');
+const path = require('node:path');
 const app = express();
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(__dirname));
-
-const mongoUri = process.env.MONGODB_URI;
-const dbName = process.env.MONGODB_DB || 'ledger';
-if (!mongoUri) throw new Error('Set MONGODB_URI to your MongoDB connection string.');
-
-const client = new MongoClient(mongoUri);
 const tokenExpiryMs = 30 * 24 * 60 * 60 * 1000;
+let client;
+let databaseReady;
 let users;
 let accounts;
 let sessions;
+
+async function connectToDatabase() {
+  const mongoUri = process.env.MONGODB_URI;
+  if (!mongoUri) throw new Error('MONGODB_URI is not configured.');
+
+  if (!client) client = new MongoClient(mongoUri);
+  if (!databaseReady) {
+    databaseReady = (async () => {
+      await client.connect();
+      const db = client.db(process.env.MONGODB_DB || 'ledger');
+      users = db.collection('users');
+      accounts = db.collection('accounts');
+      sessions = db.collection('sessions');
+      await Promise.all([
+        users.createIndex({ username: 1 }, { unique: true }),
+        accounts.createIndex({ userId: 1 }, { unique: true }),
+        sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 })
+      ]);
+    })().catch(error => {
+      databaseReady = null;
+      throw error;
+    });
+  }
+  await databaseReady;
+}
+
+const requireDatabase = asyncRoute(async (req, res, next) => {
+  try {
+    await connectToDatabase();
+    next();
+  } catch (error) {
+    console.error('Database unavailable:', error.message);
+    res.status(503).json({ error: 'The database is unavailable. Check the MONGODB_URI environment variable and database network access.' });
+  }
+});
+
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/assets/:name', (req, res, next) => {
+  const assets = {
+    'gotyme-bank-logo.svg': 'gotyme-bank-logo.svg',
+    'atome-ph-app-icon.jpg': 'atome-ph-app-icon.jpg'
+  };
+  const filename = assets[req.params.name];
+  if (!filename) return next();
+  res.sendFile(path.join(__dirname, 'assets', filename));
+});
+app.use('/api', requireDatabase);
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -102,16 +145,13 @@ app.use((error, req, res, next) => {
 });
 
 async function start() {
-  await client.connect();
-  const db = client.db(dbName);
-  users = db.collection('users');
-  accounts = db.collection('accounts');
-  sessions = db.collection('sessions');
-  await users.createIndex({ username: 1 }, { unique: true });
-  await accounts.createIndex({ userId: 1 }, { unique: true });
-  await sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+  await connectToDatabase();
   const port = Number(process.env.PORT || 3000);
   app.listen(port, () => console.log(`Ledger running at http://localhost:${port}`));
 }
 
-start().catch(error => { console.error(error); process.exit(1); });
+if (require.main === module) {
+  start().catch(error => { console.error(error); process.exit(1); });
+}
+
+module.exports = app;
