@@ -1,6 +1,6 @@
-# Ledger
+# Trix Track
 
-Ledger serves its web interface and API from one Node.js process. User accounts, transactions, wallets, categories, and goals are stored in MongoDB. Passwords are stored as salted scrypt hashes.
+Trix Track serves its web interface and API from one Node.js process. User accounts, transactions, wallets, categories, and goals are stored in MongoDB. Passwords are stored as salted scrypt hashes.
 
 ## Run locally
 

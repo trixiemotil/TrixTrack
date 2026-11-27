@@ -48,10 +48,15 @@ const requireDatabase = asyncRoute(async (req, res, next) => {
 });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/manifest.webmanifest', (req, res) => res.sendFile(path.join(__dirname, 'manifest.webmanifest')));
 app.get('/assets/:name', (req, res, next) => {
   const assets = {
     'gotyme-bank-logo.svg': 'gotyme-bank-logo.svg',
-    'atome-ph-app-icon.jpg': 'atome-ph-app-icon.jpg'
+    'atome-ph-app-icon.jpg': 'atome-ph-app-icon.jpg',
+    'trix-track-icon.svg': 'trix-track-icon.svg',
+    'trix-track-icon-180.png': 'trix-track-icon-180.png',
+    'trix-track-icon-192.png': 'trix-track-icon-192.png',
+    'trix-track-icon-512.png': 'trix-track-icon-512.png'
   };
   const filename = assets[req.params.name];
   if (!filename) return next();
@@ -147,7 +152,7 @@ app.use((error, req, res, next) => {
 async function start() {
   await connectToDatabase();
   const port = Number(process.env.PORT || 3000);
-  app.listen(port, () => console.log(`Ledger running at http://localhost:${port}`));
+  app.listen(port, () => console.log(`Trix Track running at http://localhost:${port}`));
 }
 
 if (require.main === module) {
