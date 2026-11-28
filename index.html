@@ -1216,9 +1216,14 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{ou
   .goal-dates-row label{white-space:normal;}
   .goal-dates-row input[type="date"]{min-height:56px;padding:12px;font-size:16px;}
 }
-.modal input[type="date"]{padding-right:48px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%235B0A0A' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M16 3v4M8 3v4M3 10h18'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;background-size:19px 19px;cursor:pointer;}
-.modal input[type="date"]::-webkit-calendar-picker-indicator{width:32px;height:32px;margin:0;padding:0;opacity:0;cursor:pointer;}
-.modal input[type="date"][readonly]{cursor:default;background-image:none;}
+.date-picker-control{position:relative;width:100%;min-width:0;max-width:100%;}
+.date-picker-native{position:absolute!important;width:1px!important;height:1px!important;min-height:0!important;padding:0!important;border:0!important;opacity:0!important;overflow:hidden!important;pointer-events:none!important;}
+.date-picker-trigger{width:100%;min-width:0;min-height:56px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 15px;border:1px solid color-mix(in srgb,var(--primary) 17%,var(--border));border-radius:15px;background:linear-gradient(135deg,var(--bg),var(--surface));color:var(--ink);text-align:left;font:600 16px Inter,sans-serif;font-variant-numeric:tabular-nums;transition:border-color .16s ease,box-shadow .16s ease;}
+.date-picker-trigger:hover,.date-picker-trigger:focus-visible{border-color:color-mix(in srgb,var(--primary) 48%,var(--border));box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 8%,transparent);}
+.date-picker-trigger-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.date-picker-trigger-placeholder{color:var(--ink-faint);font-weight:500;}
+.date-picker-trigger svg{width:21px;height:21px;flex:0 0 21px;color:var(--primary);}
+.date-picker-control[aria-disabled="true"] .date-picker-trigger{cursor:default;opacity:.78;}
 .date-picker-layer{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(34,18,20,.42);backdrop-filter:blur(5px);}
 .date-picker-layer[hidden]{display:none;}
 .date-picker-card{width:min(100%,360px);padding:20px;border:1px solid var(--border);border-radius:24px;background:var(--surface);box-shadow:0 22px 70px rgba(32,12,14,.25);color:var(--ink);}
@@ -2746,21 +2751,44 @@ window.deleteCategory = deleteCategory;
 function initModalDatePickers(overlay){
   const inputs=[...overlay.querySelectorAll('.modal input[type="date"]')];
   if(!inputs.length)return;
+  inputs.forEach(input=>{
+    const label=input.labels?.[0]?.textContent?.trim()||'Choose date';
+    input.dataset.dateLabel=label;
+    const wasReadOnly=input.readOnly;
+    input.dataset.datePickerLocked=String(wasReadOnly);
+    const trigger=document.createElement('button');
+    trigger.type='button';trigger.className='date-picker-trigger';trigger.id=`${input.id||'date'}-picker-trigger`;
+    trigger.setAttribute('aria-label',`${wasReadOnly?'Calculated':'Choose'} ${label.toLowerCase()}`);
+    const value=document.createElement('span');value.className='date-picker-trigger-value';
+    const icon=document.createElementNS('http://www.w3.org/2000/svg','svg');icon.setAttribute('viewBox','0 0 24 24');icon.setAttribute('fill','none');icon.setAttribute('stroke','currentColor');icon.setAttribute('stroke-width','1.8');icon.setAttribute('stroke-linecap','round');icon.setAttribute('stroke-linejoin','round');icon.setAttribute('aria-hidden','true');
+    icon.innerHTML='<rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M16 3v4M8 3v4M3 10h18"></path>';
+    trigger.append(value,icon);
+    const control=document.createElement('div');control.className='date-picker-control';
+    input.parentNode.insertBefore(control,input);control.append(trigger,input);
+    input.classList.add('date-picker-native');input.readOnly=true;input.tabIndex=-1;input.setAttribute('aria-hidden','true');
+    const labelElement=overlay.querySelector(`label[for="${CSS.escape(input.id)}"]`);if(labelElement)labelElement.htmlFor=trigger.id;
+    trigger.addEventListener('click',()=>{if(input.dataset.datePickerLocked!=='true')openFor(input,trigger);});
+    input.addEventListener('input',()=>updateDatePickerDisplay(input));
+    input.addEventListener('change',()=>updateDatePickerDisplay(input));
+    updateDatePickerDisplay(input);
+  });
   const layer=document.createElement('div');
   layer.className='date-picker-layer';
   layer.hidden=true;
+  layer.tabIndex=-1;
   layer.innerHTML='<section class="date-picker-card" role="dialog" aria-modal="true" aria-label="Choose date"></section>';
   overlay.appendChild(layer);
   const card=layer.querySelector('.date-picker-card');
-  let activeInput=null,shownMonth=new Date();
+  let activeInput=null,activeTrigger=null,shownMonth=new Date();
   const asDate=value=>value?new Date(`${value}T00:00:00`):null;
   const dateValue=date=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
   const isAllowed=value=>(!activeInput.min||value>=activeInput.min)&&(!activeInput.max||value<=activeInput.max);
+  function openFor(input,trigger){activeInput=input;activeTrigger=trigger;shownMonth=asDate(input.value)||new Date();layer.hidden=false;render();layer.focus();}
   function render(){
     if(!activeInput)return;
     const year=shownMonth.getFullYear(),month=shownMonth.getMonth();
     const first=new Date(year,month,1),daysInMonth=new Date(year,month+1,0).getDate(),offset=(first.getDay()+6)%7;
-    const selected=activeInput.value,today=todayStr(),label=activeInput.labels?.[0]?.textContent?.trim()||'date';
+    const selected=activeInput.value,today=todayStr(),label=activeInput.dataset.dateLabel||'date';
     const blank=Array.from({length:offset},()=>'<span aria-hidden="true"></span>').join('');
     const days=Array.from({length:daysInMonth},(_,index)=>{
       const date=new Date(year,month,index+1),value=dateValue(date),disabled=!isAllowed(value);
@@ -2769,20 +2797,7 @@ function initModalDatePickers(overlay){
     card.setAttribute('aria-label',`Choose ${label}`);
     card.innerHTML=`<header class="date-picker-head"><div class="date-picker-month">${shownMonth.toLocaleDateString(undefined,{month:'long',year:'numeric'})}</div><div class="date-picker-nav"><button type="button" data-month-step="-1" aria-label="Previous month">‹</button><button type="button" data-month-step="1" aria-label="Next month">›</button><button type="button" class="date-picker-close" data-date-action="close" aria-label="Close date picker">×</button></div></header><div class="date-picker-weekdays" aria-hidden="true"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div class="date-picker-days">${blank}${days}</div><footer class="date-picker-footer">${activeInput.required?'':`<button type="button" data-date-action="clear">Clear date</button>`}<button type="button" class="date-picker-today" data-date-action="today" ${isAllowed(today)?'':'disabled'}>Today</button></footer>`;
   }
-  function close(){layer.hidden=true;activeInput=null;}
-  inputs.forEach(input=>{
-    input.addEventListener('click',event=>{
-      event.preventDefault();event.stopPropagation();
-      if(input.readOnly)return;
-      activeInput=input;
-      shownMonth=asDate(input.value)||new Date();
-      layer.hidden=false;
-      render();
-    });
-    input.addEventListener('keydown',event=>{
-      if(event.key==='Enter'||event.key===' '){event.preventDefault();input.click();}
-    });
-  });
+  function close(){layer.hidden=true;const trigger=activeTrigger;activeInput=null;activeTrigger=null;trigger?.focus();}
   layer.addEventListener('click',event=>{
     event.stopPropagation();
     const button=event.target.closest('button');
@@ -2802,8 +2817,20 @@ function initModalDatePickers(overlay){
     }
     if(button.dataset.dateAction==='close')close();
   });
-  layer.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();const input=activeInput;close();input?.focus();}});
+  layer.addEventListener('keydown',event=>{if(event.key==='Escape'){event.stopPropagation();close();}});
   layer.addEventListener('click',event=>{if(event.target===layer){close();}});
+}
+function updateDatePickerDisplay(input){
+  const valueNode=input.closest('.date-picker-control')?.querySelector('.date-picker-trigger-value');
+  const trigger=input.closest('.date-picker-control')?.querySelector('.date-picker-trigger');
+  if(!valueNode||!trigger)return;
+  const date=input.value?new Date(`${input.value}T00:00:00`):null;
+  valueNode.textContent=date&&!Number.isNaN(date.getTime())?date.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}):'Choose a date';
+  valueNode.classList.toggle('date-picker-trigger-placeholder',!input.value);
+  const calculated=input.dataset.datePickerLocked==='true';
+  trigger.disabled=calculated;
+  trigger.setAttribute('aria-label',`${calculated?'Calculated':'Choose'} ${input.dataset.dateLabel?.toLowerCase()||'date'}${input.value?`: ${valueNode.textContent}`:''}`);
+  input.closest('.date-picker-control')?.setAttribute('aria-disabled',String(calculated));
 }
 function openModal(html){
   const wrap = document.createElement('div');
@@ -3423,6 +3450,8 @@ function openGoalModal(id){
     const manualWeekly=cycle==='week'&&days.length>0;
     const automatic=window._goalType==='periodic'&&!manualWeekly;
     targetInput.readOnly=automatic;
+    targetInput.dataset.datePickerLocked=String(automatic);
+    updateDatePickerDisplay(targetInput);
     targetInput.required=window._goalType==='periodic';
     if(note) note.textContent=window._goalType!=='periodic'?'Optional':automatic?'Calculated from start date and cycle count':'Choose an end date for weekly deposits';
     if(!automatic||!startValue) return;
@@ -3437,6 +3466,7 @@ function openGoalModal(id){
       end.setDate(end.getDate()+(cycle==='week'?7*count:count));
       targetInput.value=goalDateString(end);
     }
+    updateDatePickerDisplay(targetInput);
   };
 
   window.updatePeriodicDeposit = function(){
