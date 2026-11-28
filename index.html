@@ -633,9 +633,21 @@ a{color:inherit;}
 .tx-category-options .transaction-category-option .category-icon{width:30px;height:30px;flex-basis:30px;}
 .tx-category-options .transaction-category-name{font-size:10.5px;}
 .transaction-category-field>label{display:block;margin-bottom:7px;}
+/* Keep native date controls within the modal's content width, including Safari's
+   intrinsic date-field sizing on iPhone. */
+.modal input[type="date"]{display:block;width:100%;min-width:0;max-width:100%;box-sizing:border-box;}
+.modal input[type="date"]::-webkit-date-and-time-value{min-width:0;text-align:left;}
 .transaction-modal .modal-actions{position:sticky;bottom:-24px;flex:none;margin:8px -24px -24px;padding:14px 24px max(8px,env(safe-area-inset-bottom));border-top:1px solid var(--border);background:var(--surface);}
 .transaction-modal .modal-actions .btn{min-height:46px;border-radius:13px;}
 @media(max-width:420px){.transaction-modal{padding:18px;border-radius:20px;max-height:calc(100dvh - 24px);}.transaction-modal .modal-head h3{font-size:22px;}.transaction-modal .field-row{display:grid;grid-template-columns:minmax(0,1fr);gap:0;}.transaction-modal .transaction-amount-field input{font-size:21px;}.transaction-modal .modal-actions{bottom:-18px;margin-right:-18px;margin-left:-18px;margin-bottom:-18px;padding-right:18px;padding-left:18px;}.transaction-category-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;}.transaction-category-option{min-height:58px;padding:7px;}.tx-wallet-trigger{gap:7px;padding:8px;}.tx-wallet-trigger-icon,.tx-wallet-trigger-icon .wallet-icon{width:32px;height:32px;flex-basis:32px;border-radius:10px;}.tx-wallet-trigger-copy strong{font-size:12px;}.tx-wallet-trigger-copy small{font-size:9px;}}
+@media(max-width:600px){
+  .transaction-modal{width:calc(100vw - 24px);max-width:480px;max-height:calc(100dvh - 24px);min-width:0;}
+  .transaction-modal form,.transaction-modal .field,.transaction-modal .field-row,.transaction-modal .tx-wallet-picker,.transaction-modal .tx-category-picker{width:100%;min-width:0;max-width:100%;}
+  .transaction-modal .field input[type="date"]{width:100%;min-width:0;max-width:100%;min-height:48px;padding:10px 9px;font-size:16px;}
+  .goal-dates-row{grid-template-columns:minmax(0,1fr);gap:0;}
+  .goal-dates-row label{white-space:normal;}
+  .goal-dates-row input[type="date"]{min-height:48px;padding:10px 9px;font-size:16px;}
+}
 
 .overlay{
   position:fixed; inset:0; background:rgba(58,44,36,0.45); backdrop-filter:blur(2px);
