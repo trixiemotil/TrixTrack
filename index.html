@@ -265,6 +265,7 @@ a{color:inherit;}
   border-width:1px;
 }
 .wallet-card .top{display:flex; align-items:center; gap:10px;}
+.wallet-card .top .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .wallet-icon{width:34px;height:34px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-size:10px;font-weight:700;letter-spacing:-.03em;}
 .wallet-icon svg{width:19px;height:19px;}
 .wallet-icon.cash{background:#DDF2D4;color:#356B3D;}
@@ -473,9 +474,17 @@ a{color:inherit;}
 .wallet-list-heading h2{font:600 15px Inter,sans-serif;color:var(--ink);}
 .wallet-count{padding:5px 9px;border:1px solid var(--border);border-radius:999px;background:var(--surface);color:var(--ink-soft);font-size:10px;font-weight:600;white-space:nowrap;}
 .wallet-list-tools{display:flex;align-items:center;gap:8px;}
+.wallet-drag-handle{width:28px;height:32px;display:inline-grid;place-items:center;flex:none;padding:0;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--ink-faint);font:700 17px/1 Inter,sans-serif;letter-spacing:-2px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;}
+.wallet-drag-handle:active{cursor:grabbing;background:var(--primary-tint);color:var(--primary);}
+.wallet-card.wallet-card-dragging{opacity:.42;transform:scale(.985);}
+.wallet-card.wallet-card-drop-target{border-color:var(--primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--primary) 20%,transparent);}
 .wallet-add-icon{width:34px;height:34px;display:inline-grid;place-items:center;border:1px solid var(--border);border-radius:11px;background:var(--primary);color:#fff;box-shadow:0 3px 8px color-mix(in srgb,var(--primary) 20%,transparent);transition:transform .15s ease,background .15s ease;}
 .wallet-add-icon:hover{background:var(--primary-dark);transform:translateY(-1px);}
 .wallet-add-icon svg{width:17px;height:17px;}
+.wallet-reorder-toggle{width:34px;height:34px;display:inline-grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:11px;background:var(--surface);color:var(--ink-soft);font:700 19px/1 Inter,sans-serif;cursor:pointer;}
+.wallet-reorder-toggle.active{border-color:var(--primary);background:var(--primary-tint);color:var(--primary);}
+.wallet-drag-handle{display:none;}
+.wallet-grid.reordering .wallet-drag-handle{display:inline-grid;}
 .wallet-add-icon:focus-visible{outline:3px solid color-mix(in srgb,var(--primary) 30%,transparent);outline-offset:2px;}
 @media(max-width:420px){
   .modal.wallet-details-modal{padding:16px;border-radius:20px;}
@@ -1081,7 +1090,7 @@ body.reduce-motion *,body.reduce-motion *::before,body.reduce-motion *::after{sc
 .goal-icon-option:hover{border-color:var(--primary);color:var(--primary);transform:translateY(-1px);}
 .goal-icon-option.selected{background:var(--primary);color:#fff;border-color:var(--primary);box-shadow:0 3px 8px color-mix(in srgb,var(--primary) 22%,transparent);}
 .goal-icon-option span{font-size:10px;line-height:1.1;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 3px;}
-.goal-icon-overlay{position:fixed;inset:0;z-index:120;background:rgba(36,20,24,.46);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:16px;}
+.goal-icon-overlay{position:fixed;inset:0;z-index:300;background:rgba(36,20,24,.46);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:16px;}
 .goal-icon-modal{background:var(--surface);color:var(--ink);border:1px solid var(--border);border-radius:20px;width:min(560px,100%);max-height:min(82dvh,700px);display:flex;flex-direction:column;padding:22px;box-shadow:0 24px 70px rgba(0,0,0,.26);}
 .goal-icon-modal-head{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px;}
 .goal-icon-modal-head h3{font-size:23px;}
@@ -2452,6 +2461,7 @@ function deleteTx(id){
 window.deleteTx = deleteTx;
 
 /* ---------- WALLETS ---------- */
+let walletReordering=false;
 function renderWallets(){
   const assets=Math.round(state.wallets.reduce((sum,w)=>sum+Math.max(0,walletBalance(w.id)),0)*100)/100;
   const debt=Math.round(state.wallets.reduce((sum,w)=>sum+Math.max(0,-walletBalance(w.id)),0)*100)/100;
@@ -2459,14 +2469,68 @@ function renderWallets(){
   return `
     <div class="topbar wallet-topbar"><div><h1>Wallets</h1><div class="sub">Track balances across cash, bank, and cards</div></div></div>
     <section class="wallet-overview" aria-label="Overall wallet summary"><div class="wallet-overview-head"><div><span class="wallet-overview-kicker">Across all wallets</span><div class="wallet-overview-title">Net worth</div></div><div class="wallet-overview-total" style="color:${netWorth<0?'#FFCAC3':'#FFFFFF'}">${fmt(netWorth)}</div></div><div class="wallet-overview-stats"><div class="wallet-overview-stat"><div class="wallet-overview-stat-label"><span class="wallet-overview-dot"></span>Assets</div><strong>${fmt(assets)}</strong></div><div class="wallet-overview-stat debt"><div class="wallet-overview-stat-label"><span class="wallet-overview-dot"></span>Debt</div><strong>${fmt(debt)}</strong></div></div><div class="wallet-overview-note">Net worth is your total assets minus any wallet balances below zero.</div></section>
-    <div class="wallet-list-heading"><h2>Your wallets</h2><div class="wallet-list-tools"><span class="wallet-count">${state.wallets.length} wallet${state.wallets.length===1?'':'s'}</span><button type="button" class="wallet-add-icon" aria-label="Add wallet" title="Add wallet" onclick="openWalletModal()">${ICONS.plus}</button></div></div>
-    <div class="grid cols-3 wallet-grid">${state.wallets.map(w=>{
+    <div class="wallet-list-heading"><h2>Your wallets</h2><div class="wallet-list-tools"><span class="wallet-count">${state.wallets.length} wallet${state.wallets.length===1?'':'s'}</span><button type="button" class="wallet-reorder-toggle ${walletReordering?'active':''}" aria-label="${walletReordering?'Finish':'Reorder'} wallets" title="${walletReordering?'Finish reordering':'Reorder wallets'}" aria-pressed="${walletReordering}" onclick="toggleWalletReordering()">↕</button><button type="button" class="wallet-add-icon" aria-label="Add wallet" title="Add wallet" onclick="openWalletModal()">${ICONS.plus}</button></div></div>
+    <div class="grid cols-3 wallet-grid ${walletReordering?'reordering':''}">${state.wallets.map(w=>{
       const total=walletBalance(w.id),available=walletAvailableBalance(w.id),saved=walletSavedBalance(w.id);
-      if(isAtomeWallet(w)){const atome=walletIconType(w)==='atome';return `<div class="card wallet-card atome-wallet-card" role="button" tabindex="0" aria-label="View ${esc(w.name)} loan details" onclick="openWalletDetails('${w.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openWalletDetails('${w.id}')}"><div class="wallet-card-head"><div class="top">${walletIconMarkup(w)}<span class="name">${esc(w.name)}</span></div><div class="wallet-total"><div class="wallet-total-label">Outstanding debt</div><div class="bal mono" style="color:var(--expense)">${fmt(Math.abs(total))}</div></div></div><div class="atome-limit-breakdown"><span><small>${atome?'Card available':'Available limit'}</small><strong>${fmt(atomeAvailableLimit(w,'card'))}</strong></span>${atome?`<span><small>Cash available</small><strong>${fmt(atomeAvailableLimit(w,'cash'))}</strong></span>`:''}</div></div>`;}
-      return `<div class="card wallet-card" role="button" tabindex="0" aria-label="View ${esc(w.name)} wallet details" onclick="openWalletDetails('${w.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openWalletDetails('${w.id}')}" ><div class="wallet-card-head"><div class="top">${walletIconMarkup(w)}<span class="name">${esc(w.name)}</span></div><div class="wallet-total"><div class="wallet-total-label">Total balance</div><div class="bal mono" style="color:${total<0?'var(--expense)':'var(--ink)'}">${fmt(total)}</div></div></div><div class="wallet-balance-breakdown"><span><span>Available</span><strong>${fmt(available)}</strong></span><span><span>Saved</span><strong>${fmt(saved)}</strong></span></div></div>`;
+      const dragHandle=`<button type="button" class="wallet-drag-handle" aria-label="Reorder ${esc(w.name)} wallet" title="Drag to reorder; use arrow keys to move" onpointerdown="startWalletDrag(event,'${esc(w.id)}')" onclick="event.stopPropagation()" onkeydown="event.stopPropagation();if(event.key==='ArrowUp'){event.preventDefault();moveWalletBy('${esc(w.id)}',-1)}else if(event.key==='ArrowDown'){event.preventDefault();moveWalletBy('${esc(w.id)}',1)}">=</button>`;
+      if(isAtomeWallet(w)){const atome=walletIconType(w)==='atome';return `<div class="card wallet-card atome-wallet-card" data-wallet-id="${esc(w.id)}" role="button" tabindex="0" aria-label="View ${esc(w.name)} loan details" onclick="openWalletDetails('${w.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openWalletDetails('${w.id}')}"><div class="wallet-card-head"><div class="top">${walletIconMarkup(w)}<span class="name">${esc(w.name)}</span></div><div class="wallet-total"><div class="wallet-total-label">Outstanding debt</div><div class="bal mono" style="color:var(--expense)">${fmt(Math.abs(total))}</div></div>${dragHandle}</div><div class="atome-limit-breakdown"><span><small>${atome?'Card available':'Available limit'}</small><strong>${fmt(atomeAvailableLimit(w,'card'))}</strong></span>${atome?`<span><small>Cash available</small><strong>${fmt(atomeAvailableLimit(w,'cash'))}</strong></span>`:''}</div></div>`;}
+      return `<div class="card wallet-card" data-wallet-id="${esc(w.id)}" role="button" tabindex="0" aria-label="View ${esc(w.name)} wallet details" onclick="openWalletDetails('${w.id}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openWalletDetails('${w.id}')}" ><div class="wallet-card-head"><div class="top">${walletIconMarkup(w)}<span class="name">${esc(w.name)}</span></div><div class="wallet-total"><div class="wallet-total-label">Total balance</div><div class="bal mono" style="color:${total<0?'var(--expense)':'var(--ink)'}">${fmt(total)}</div></div>${dragHandle}</div><div class="wallet-balance-breakdown"><span><span>Available</span><strong>${fmt(available)}</strong></span><span><span>Saved</span><strong>${fmt(saved)}</strong></span></div></div>`;
     }).join('') || `<div class="card empty">No wallets yet.</div>`}</div>
   `;
 }
+function toggleWalletReordering(){walletReordering=!walletReordering;render();}
+window.toggleWalletReordering=toggleWalletReordering;
+let walletDragState=null;
+function startWalletDrag(event,walletId){
+  event.preventDefault();event.stopPropagation();
+  if((event.button!==undefined&&event.button!==0)||walletDragState)return;
+  const card=event.currentTarget.closest('.wallet-card');
+  if(!card)return;
+  walletDragState={walletId,card,pointerId:event.pointerId,moved:false};
+  card.classList.add('wallet-card-dragging');
+  document.addEventListener('pointermove',moveWalletDrag,{passive:false});
+  document.addEventListener('pointerup',finishWalletDrag,{once:true});
+  document.addEventListener('pointercancel',finishWalletDrag,{once:true});
+}
+function moveWalletDrag(event){
+  if(!walletDragState||event.pointerId!==walletDragState.pointerId)return;
+  event.preventDefault();
+  const target=document.elementFromPoint(event.clientX,event.clientY)?.closest('.wallet-grid .wallet-card');
+  document.querySelectorAll('.wallet-grid .wallet-card-drop-target').forEach(card=>card.classList.remove('wallet-card-drop-target'));
+  if(!target||target===walletDragState.card)return;
+  target.classList.add('wallet-card-drop-target');walletDragState.moved=true;
+  const bounds=target.getBoundingClientRect();
+  target.parentElement.insertBefore(walletDragState.card,event.clientY<bounds.top+bounds.height/2?target:target.nextSibling);
+}
+function finishWalletDrag(event){
+  if(!walletDragState||event.pointerId!==walletDragState.pointerId)return;
+  const dragged=walletDragState;
+  document.removeEventListener('pointermove',moveWalletDrag);
+  document.removeEventListener('pointerup',finishWalletDrag);
+  document.removeEventListener('pointercancel',finishWalletDrag);
+  document.querySelectorAll('.wallet-grid .wallet-card').forEach(card=>card.classList.remove('wallet-card-dragging','wallet-card-drop-target'));
+  walletDragState=null;
+  if(!dragged.moved)return;
+  const walletsById=new Map(state.wallets.map(wallet=>[wallet.id,wallet]));
+  const reordered=[...document.querySelectorAll('.wallet-grid .wallet-card[data-wallet-id]')].map(card=>walletsById.get(card.dataset.walletId)).filter(Boolean);
+  if(reordered.length!==state.wallets.length)return;
+  state.wallets=reordered;
+  saveKey('wallets',state.wallets);
+  render();
+}
+window.startWalletDrag=startWalletDrag;
+function moveWalletBy(walletId,offset){
+  const current=state.wallets.findIndex(wallet=>wallet.id===walletId);
+  const target=current+offset;
+  if(current<0||target<0||target>=state.wallets.length)return;
+  const [wallet]=state.wallets.splice(current,1);
+  state.wallets.splice(target,0,wallet);
+  saveKey('wallets',state.wallets);
+  render();
+  const walletName=walletById(walletId)?.name;
+  [...document.querySelectorAll('.wallet-drag-handle')].find(handle=>handle.getAttribute('aria-label')===`Reorder ${walletName} wallet`)?.focus();
+}
+window.moveWalletBy=moveWalletBy;
 function deleteWallet(id){
   const hasTx = state.transactions.some(t=>t.walletId===id);
   if(state.wallets.length===1){ alert('You need at least one wallet.'); return; }
