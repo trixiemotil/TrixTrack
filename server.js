@@ -132,7 +132,7 @@ app.get('/api/version', requireAuth, asyncRoute(async (req, res) => {
 
 app.put('/api/data', requireAuth, asyncRoute(async (req, res) => {
   const { key, value } = req.body || {};
-  if (!['wallets', 'categories', 'goals', 'transactions'].includes(key) || !Array.isArray(value)) {
+  if (!['wallets', 'categories', 'goals', 'transactions', 'atomeLoans'].includes(key) || !Array.isArray(value)) {
     return res.status(400).json({ error: 'Invalid account data.' });
   }
   await accounts.updateOne(
