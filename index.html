@@ -1774,6 +1774,11 @@ function applyTheme(theme){
 function setTheme(theme){
   applyTheme(theme);
   render();
+  document.querySelectorAll('.theme-btn[onclick*="setTheme("]').forEach(button=>{
+    const selected=button.getAttribute('onclick')?.includes(`setTheme('${theme}')`)===true;
+    button.classList.toggle('active',selected);
+    button.setAttribute('aria-pressed',String(selected));
+  });
 }
 window.setTheme = setTheme;
 function setDarkMode(enabled){
