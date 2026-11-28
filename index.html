@@ -481,7 +481,8 @@ a{color:inherit;}
 .wallet-add-icon{width:34px;height:34px;display:inline-grid;place-items:center;border:1px solid var(--border);border-radius:11px;background:var(--primary);color:#fff;box-shadow:0 3px 8px color-mix(in srgb,var(--primary) 20%,transparent);transition:transform .15s ease,background .15s ease;}
 .wallet-add-icon:hover{background:var(--primary-dark);transform:translateY(-1px);}
 .wallet-add-icon svg{width:17px;height:17px;}
-.wallet-reorder-toggle{width:34px;height:34px;display:inline-grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:11px;background:var(--surface);color:var(--ink-soft);font:700 19px/1 Inter,sans-serif;cursor:pointer;}
+.wallet-reorder-toggle{width:34px;height:34px;display:inline-grid;place-items:center;padding:0;border:1px solid var(--border);border-radius:11px;background:var(--surface);color:var(--ink-soft);cursor:pointer;}
+.wallet-reorder-toggle svg{width:18px;height:18px;display:block;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
 .wallet-reorder-toggle.active{border-color:var(--primary);background:var(--primary-tint);color:var(--primary);}
 .wallet-drag-handle{display:none;}
 .wallet-grid.reordering .wallet-drag-handle{display:inline-grid;}
@@ -1519,6 +1520,19 @@ async function loadUserData(){
   state.goals = data.goals ?? [];
   state.transactions = data.transactions ?? [];
   state.atomeLoans = Array.isArray(data.atomeLoans) ? data.atomeLoans : [];
+  let cashoutsMigrated=false,goalsMigrated=false;
+  state.transactions.forEach(tx=>{
+    if(!tx.walletSavedCashout||tx.walletCashoutDetached) return;
+    const goalId=tx.note?.match(/\[goal-cashout:([^\]]+)\]/)?.[1];
+    const goal=goalId&&goalId!=='unallocated'?state.goals.find(item=>item.id===goalId):null;
+    if(goal){goal.current=Math.round(((Number(goal.current)||0)+(Number(tx.amount)||0))*100)/100;goalsMigrated=true;}
+    tx.type='expense';
+    tx.note='Cash out from saved balance';
+    tx.walletCashoutDetached=true;
+    cashoutsMigrated=true;
+  });
+  if(cashoutsMigrated) saveKey('transactions',state.transactions);
+  if(goalsMigrated) saveKey('goals',state.goals);
   reconcileCreditPurchaseLoans();
   processRecurringGoals();
 }
@@ -1627,59 +1641,29 @@ function processRecurringGoals(){
       g.monthlyDeposit=g.splitWeekly?(Number(g.deposit)||0):Math.ceil((Number(g.target)/months)*100)/100;
       changed=true;
     }
-    if(g.current >= g.target) return;
-    const nextDue=nextGoalDueDate(g,g.lastContribution);
-    const weeklySchedule=goalUsesWeeklyDeposits(g);
-    if(nextDue && today>=goalDateString(nextDue) && (!g.targetDate || (weeklySchedule?goalDateString(nextDue)<g.targetDate:goalDateString(nextDue)<=g.targetDate)) && g.current < g.target){
-      const dueValue=goalDateString(nextDue);
-      const amount=weeklySchedule?goalWeeklyInstallment(g,dueValue):(Number(g.deposit)||0);
-      if(amount<=0){g.lastContribution=dueValue;changed=true;return;}
-      const fromWallet = state.wallets[0];
-      const addAmt = Math.min(amount, g.target - g.current, fromWallet?walletAvailableBalance(fromWallet.id):0);
-      if(addAmt<=0) return;
-      g.current = Math.round((g.current + addAmt) * 100) / 100;
-      g.lastContribution = dueValue;
-      g.depositHistory=Array.isArray(g.depositHistory)?g.depositHistory:[];
-      const depositEntry={date:dueValue,amount:addAmt};
-      g.depositHistory.push(depositEntry);
-      if(weeklySchedule) addGoalMonthSaved(g,dueValue.slice(0,7),addAmt);
-      changed = true;
-      let goalCat = state.categories.find(c=>c.id==='c-savings-auto');
-      if(!goalCat){
-        goalCat = {id:'c-savings-auto', name:'Auto Savings', type:'expense', color:'#C9A227'};
-        state.categories.push(goalCat);
-        saveKey('categories', state.categories);
-      }
-      if(fromWallet){
-        const transactionId=uid();
-        state.transactions.push({
-          id:transactionId,
-          amount: addAmt,
-          walletId: fromWallet.id,
-          categoryId: goalCat.id,
-          date: today,
-          note: `Periodic contribution to "${g.name}" (${g.cycle}) [goal:${g.id}] (scheduled ${dueValue})`,
-          type:'expense'
-        });
-        depositEntry.transactionId=transactionId;
-        depositEntry.walletId=fromWallet.id;
-        saveKey('transactions', state.transactions);
-      }
-    }
   });
-  if(changed){
-    saveKey('goals', state.goals);
-    saveKey('transactions', state.transactions);
-  }
+  if(changed) saveKey('goals', state.goals);
 }
 
 /* ---------------- Goal reset ---------------- */
 function resetGoal(goalId){
   const g = state.goals.find(x=>x.id===goalId);
   if(!g) return;
-  if(!confirm(`Reset "${g.name}"? This will set saved amount to zero. Existing transactions will NOT be removed from wallets.`)) return;
+  if(!confirm(`Reset "${g.name}" progress to zero? Periodic savings will restart this month. Past transactions will be kept.`)) return;
   g.current = 0;
-  g.lastContribution = g.startDate || todayStr();
+  if(g.type==='periodic'){
+    const today=goalDateValue(todayStr()),monthStart=new Date(today.getFullYear(),today.getMonth(),1),previousDay=new Date(monthStart);
+    previousDay.setDate(0);
+    g.startDate=goalDateString(monthStart);
+    g.lastContribution=goalDateString(previousDay);
+    g.scheduleResetDate=todayStr();
+    g.depositHistory=[];
+    g.clearedDeposits=[];
+    delete g.monthlySavedMonth;
+    delete g.monthlySavedAmount;
+  }else{
+    g.lastContribution = g.startDate || todayStr();
+  }
   saveKey('goals', state.goals);
   render();
 }
@@ -1740,15 +1724,35 @@ function walletAvailableBalance(walletId){
   let bal = w.initial || 0;
   state.transactions.forEach(t=>{
     if(t.walletId!==walletId) return;
+    // Saved-balance cash-outs are spent from the saved portion, so they reduce
+    // the total wallet balance without changing the available portion again.
+    if(t.walletSavedCashout) return;
     bal += t.type==='income' ? t.amount : t.type==='transfer' ? (t.transferDirection==='in'?t.amount:-t.amount) : -t.amount;
   });
+  bal-=Number(w.savedBalanceAdjustment)||0;
   return Math.round(bal * 100) / 100;
 }
-function walletSavedBalance(walletId){
+function walletSavedTransactionsBalance(walletId){
   return Math.round(state.transactions.reduce((sum,tx)=>{
-    if(tx.walletId!==walletId||tx.type!=='expense'||!tx.note?.includes('[goal:')) return sum;
-    return tx.note.match(/\[goal:[^\]]+\]/)?sum+(Number(tx.amount)||0):sum;
+    if(tx.walletId!==walletId) return sum;
+    if(tx.type==='expense'&&tx.note?.match(/\[goal:[^\]]+\]/)) return sum+(Number(tx.amount)||0);
+    if(tx.walletSavedCashout) return sum-(Number(tx.amount)||0);
+    return sum;
   },0)*100)/100;
+}
+function walletSavedBalance(walletId){
+  const wallet=walletById(walletId);
+  return Math.max(0,Math.round((walletSavedTransactionsBalance(walletId)+(Number(wallet?.savedBalanceAdjustment)||0))*100)/100);
+}
+function walletGoalSavedBalances(walletId){
+  const balances=new Map();
+  state.transactions.forEach(tx=>{
+    if(tx.walletId!==walletId||tx.walletSavedCashout||tx.type!=='expense') return;
+    const goalId=tx.note?.match(/\[goal:([^\]]+)\]/)?.[1];
+    if(goalId) balances.set(goalId,(balances.get(goalId)||0)+(Number(tx.amount)||0));
+  });
+  for(const [goalId,amount] of balances) balances.set(goalId,Math.max(0,Math.round(amount*100)/100));
+  return balances;
 }
 function totalBalance(){ return state.wallets.reduce((s,w)=>s+walletBalance(w.id),0); }
 function txInScope(walletFilter){
@@ -2060,19 +2064,19 @@ window.viewWalletRecords = viewWalletRecords;
 function receiptRowHTML(t){
   const c = catById(t.categoryId);
   const w = walletById(t.walletId);
-  const note=String(t.note||'').replace(/\[goal:[^\]]+\]/g,'').replace(/\s*\(scheduled \d{4}-\d{2}-\d{2}\)/g,'').trim();
+  const note=String(t.note||'').replace(/\[(?:goal|goal-cashout):[^\]]+\]/g,'').replace(/\s*\(scheduled \d{4}-\d{2}-\d{2}\)/g,'').trim();
   const atomePurchase=Boolean(t.atomeLoanId);
   const loan=atomePurchase?state.atomeLoans.find(item=>item.id===t.atomeLoanId):null;
   const editableCreditDraw=Boolean(loan&&loan.transactionId===t.id&&!t.atomeRepayment&&!t.atomeInstallmentFee);
   const provider=loan?creditWalletName(walletById(loan.walletId)):'Credit';
-  const categoryName=t.atomeLoanDraw?`${provider} cash loan`:t.type==='transfer'?`${provider} repayment`:(c?c.name:'Uncategorized');
+  const categoryName=t.walletSavedCashout?'Savings cash out':t.atomeLoanDraw?`${provider} cash loan`:t.type==='transfer'?`${provider} repayment`:(c?c.name:'Uncategorized');
   const positive=t.type==='income'||(t.type==='transfer'&&t.transferDirection==='in');
   return `<div class="receipt-row">
     <span class="receipt-icon category-icon" aria-hidden="true">${categoryIconSvg(categoryIconKey(c))}</span>
     <div class="receipt-mid"><div class="receipt-cat">${esc(categoryName)}</div><div class="receipt-meta">${w?esc(w.name):''} · ${t.date}${note?' · '+esc(note):''}</div></div>
     <div class="receipt-leader"></div>
     <div class="receipt-amt ${positive?'income':'expense'}">${positive?'+':'-'}${fmt(t.amount)}</div>
-    ${editableCreditDraw?`<div class="receipt-actions"><button class="btn ghost" aria-label="Edit credit purchase" title="Edit" onclick="openAtomeLoanEditModal('${t.id}')">${ICONS.edit}</button><button class="btn ghost" aria-label="Delete credit purchase" title="Delete" onclick="deleteTx('${t.id}')">${ICONS.trash}</button></div>`:atomePurchase||t.type==='transfer'?'<div class="receipt-actions"></div>':`<div class="receipt-actions"><button class="btn ghost" onclick="openTxModal('${t.id}')">${ICONS.edit}</button><button class="btn ghost" onclick="deleteTx('${t.id}')">${ICONS.trash}</button></div>`}
+    ${t.walletSavedCashout?'<div class="receipt-actions"></div>':editableCreditDraw?`<div class="receipt-actions"><button class="btn ghost" aria-label="Edit credit purchase" title="Edit" onclick="openAtomeLoanEditModal('${t.id}')">${ICONS.edit}</button><button class="btn ghost" aria-label="Delete credit purchase" title="Delete" onclick="deleteTx('${t.id}')">${ICONS.trash}</button></div>`:atomePurchase||t.type==='transfer'?'<div class="receipt-actions"></div>':`<div class="receipt-actions"><button class="btn ghost" onclick="openTxModal('${t.id}')">${ICONS.edit}</button><button class="btn ghost" onclick="deleteTx('${t.id}')">${ICONS.trash}</button></div>`}
   </div>`;
 }
 
@@ -2160,7 +2164,7 @@ function nextGoalDueDate(g,afterValue){
       cursor.setDate(cursor.getDate()+1);
       const dayOffset=Math.floor((Date.UTC(cursor.getFullYear(),cursor.getMonth(),cursor.getDate())-Date.UTC(start.getFullYear(),start.getMonth(),start.getDate()))/86400000);
       const cursorValue=goalDateString(cursor);
-      if(dayOffset>0&&goalIsScheduledWeekday(g,cursorValue)&&!cleared.has(cursorValue)) return new Date(cursor);
+      if(dayOffset>=0&&goalIsScheduledWeekday(g,cursorValue)&&!cleared.has(cursorValue)) return new Date(cursor);
     }
     return null;
   }
@@ -2196,6 +2200,7 @@ function goalScheduleRows(g,remaining){
   state.transactions.forEach(tx=>{
     if(!tx.note?.includes(`[goal:${g.id}]`)) return;
     const scheduled=tx.note.match(/\(scheduled (\d{4}-\d{2}-\d{2})\)/)?.[1];
+    if(g.scheduleResetDate&&(scheduled||tx.date||'')<g.scheduleResetDate) return;
     if(scheduled&&!completed.has(scheduled)) completed.set(scheduled,Number(tx.amount)||0);
     if(scheduled&&tx.walletId&&!completedWallets.has(scheduled)) completedWallets.set(scheduled,tx.walletId);
   });
@@ -2216,6 +2221,11 @@ function goalScheduleRows(g,remaining){
     });
   }
   let after=g.lastContribution||g.startDate||todayStr();
+  if(weeklySelected&&g.startDate){
+    const firstScheduledDay=goalDateValue(g.startDate);
+    firstScheduledDay.setDate(firstScheduledDay.getDate()-1);
+    after=goalDateString(firstScheduledDay);
+  }
   let left=remaining;
   let simulatedMonth='';
   let simulatedMonthAmount=0;
@@ -2225,6 +2235,10 @@ function goalScheduleRows(g,remaining){
     const weeklySelected=goalUsesWeeklyDeposits(g);
     if(!due || (target && (weeklySelected?due>=target:due>target))) break;
     const dueValue=goalDateString(due);
+    if(weeklySelected&&completed.has(dueValue)){
+      after=dueValue;
+      continue;
+    }
     const dueMonth=dueValue.slice(0,7);
     if(dueMonth!==simulatedMonth){
       simulatedMonth=dueMonth;
@@ -2234,7 +2248,11 @@ function goalScheduleRows(g,remaining){
         return sum+goalClearedDepositAmount(g,item);
       },0);
     }
-    const amount=weeklySelected?goalWeeklyInstallment(g,dueValue,simulatedMonthAmount):Math.min(deposit,Math.round(left*100)/100);
+    const amount=weeklySelected
+      ?(g.splitWeekly&&g.cycle==='month'
+        ?goalWeeklyInstallment(g,dueValue,simulatedMonthAmount)
+        :Math.min(deposit,Math.round(left*100)/100))
+      :Math.min(deposit,Math.round(left*100)/100);
     if(amount<=0){after=dueValue;continue;}
     getGroup(dueValue).rows.push(`<div class="goal-schedule-row${dueStatus(dueValue)}" role="button" tabindex="0" aria-label="Add ${fmt(amount)} savings from a wallet for ${due.toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}" onclick="openContributeModal('${g.id}','${dueValue}',${amount})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openContributeModal('${g.id}','${dueValue}',${amount});}"><span class="goal-schedule-mark">${goalIconSvg('wallet')}</span><span class="goal-schedule-date">${due.toLocaleDateString('en-US',{weekday:'short',month:'2-digit',day:'2-digit',year:'numeric'})}</span><span class="goal-schedule-amount">${fmt(amount)}<small>To save · Add funds</small></span></div>`);
     simulatedMonthAmount=Math.round((simulatedMonthAmount+amount)*100)/100;
@@ -2469,7 +2487,7 @@ function renderWallets(){
   return `
     <div class="topbar wallet-topbar"><div><h1>Wallets</h1><div class="sub">Track balances across cash, bank, and cards</div></div></div>
     <section class="wallet-overview" aria-label="Overall wallet summary"><div class="wallet-overview-head"><div><span class="wallet-overview-kicker">Across all wallets</span><div class="wallet-overview-title">Net worth</div></div><div class="wallet-overview-total" style="color:${netWorth<0?'#FFCAC3':'#FFFFFF'}">${fmt(netWorth)}</div></div><div class="wallet-overview-stats"><div class="wallet-overview-stat"><div class="wallet-overview-stat-label"><span class="wallet-overview-dot"></span>Assets</div><strong>${fmt(assets)}</strong></div><div class="wallet-overview-stat debt"><div class="wallet-overview-stat-label"><span class="wallet-overview-dot"></span>Debt</div><strong>${fmt(debt)}</strong></div></div><div class="wallet-overview-note">Net worth is your total assets minus any wallet balances below zero.</div></section>
-    <div class="wallet-list-heading"><h2>Your wallets</h2><div class="wallet-list-tools"><span class="wallet-count">${state.wallets.length} wallet${state.wallets.length===1?'':'s'}</span><button type="button" class="wallet-reorder-toggle ${walletReordering?'active':''}" aria-label="${walletReordering?'Finish':'Reorder'} wallets" title="${walletReordering?'Finish reordering':'Reorder wallets'}" aria-pressed="${walletReordering}" onclick="toggleWalletReordering()">↕</button><button type="button" class="wallet-add-icon" aria-label="Add wallet" title="Add wallet" onclick="openWalletModal()">${ICONS.plus}</button></div></div>
+    <div class="wallet-list-heading"><h2>Your wallets</h2><div class="wallet-list-tools"><span class="wallet-count">${state.wallets.length} wallet${state.wallets.length===1?'':'s'}</span><button type="button" class="wallet-reorder-toggle ${walletReordering?'active':''}" aria-label="${walletReordering?'Finish':'Reorder'} wallets" title="${walletReordering?'Finish reordering':'Reorder wallets'}" aria-pressed="${walletReordering}" onclick="toggleWalletReordering()"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v16M8.5 7.5 12 4l3.5 3.5M8.5 16.5 12 20l3.5-3.5"/></svg></button><button type="button" class="wallet-add-icon" aria-label="Add wallet" title="Add wallet" onclick="openWalletModal()">${ICONS.plus}</button></div></div>
     <div class="grid cols-3 wallet-grid ${walletReordering?'reordering':''}">${state.wallets.map(w=>{
       const total=walletBalance(w.id),available=walletAvailableBalance(w.id),saved=walletSavedBalance(w.id);
       const dragHandle=`<button type="button" class="wallet-drag-handle" aria-label="Reorder ${esc(w.name)} wallet" title="Drag to reorder; use arrow keys to move" onpointerdown="startWalletDrag(event,'${esc(w.id)}')" onclick="event.stopPropagation()" onkeydown="event.stopPropagation();if(event.key==='ArrowUp'){event.preventDefault();moveWalletBy('${esc(w.id)}',-1)}else if(event.key==='ArrowDown'){event.preventDefault();moveWalletBy('${esc(w.id)}',1)}">=</button>`;
@@ -2557,13 +2575,7 @@ function deleteWallet(id){
 window.deleteWallet = deleteWallet;
 function walletGoalSavingsChartHTML(walletId,savedTotal){
   const palette=['#6f1715','#b5833a','#4b8665','#c76855','#8c668e','#4d8292','#d49d45','#75884c'];
-  const totals=new Map();
-  state.transactions.forEach(tx=>{
-    if(tx.walletId!==walletId||tx.type!=='expense') return;
-    const goalId=tx.note?.match(/\[goal:([^\]]+)\]/)?.[1];
-    if(!goalId) return;
-    totals.set(goalId,(totals.get(goalId)||0)+(Number(tx.amount)||0));
-  });
+  const totals=walletGoalSavedBalances(walletId);
   const entries=[...totals.entries()].map(([id,amount],index)=>({
     id,amount,name:state.goals.find(goal=>goal.id===id)?.name||'Other goal',color:palette[index%palette.length]
   })).filter(entry=>entry.amount>0).sort((a,b)=>b.amount-a.amount);
@@ -2687,6 +2699,25 @@ function openAtomeLoanEditModal(transactionId){
   });
 }
 window.openAtomeLoanEditModal=openAtomeLoanEditModal;
+function openWalletCashoutModal(walletId){
+  const wallet=walletById(walletId);
+  if(!wallet||isAtomeWallet(wallet)) return;
+  const saved=walletSavedBalance(walletId);
+  if(saved<=0){alert('This wallet has no saved balance to cash out.');return;}
+  openModal(`<div class="modal-head"><h3>Cash out saved balance</h3><button type="button" class="modal-close" aria-label="Close cash out form" onclick="closeModal()">&times;</button></div><div class="atome-form-intro"><div class="atome-form-intro-copy"><span>${esc(wallet.name)} · Saved balance</span><small>Cash out moves the amount back to available balance and reduces goal savings.</small></div><strong>${fmt(saved)}</strong></div><form id="wallet-cashout-form" onsubmit="submitWalletCashout(event,'${esc(walletId)}')"><div class="field transaction-amount-field"><label for="wallet-cashout-amount">Amount to cash out (₱)</label><input id="wallet-cashout-amount" type="number" min="0.01" max="${saved.toFixed(2)}" step="0.01" required placeholder="Up to ${saved.toFixed(2)}"></div><div class="modal-actions"><button type="button" class="btn secondary" onclick="closeModal()">Cancel</button><button type="submit" class="btn">Cash out</button></div></form>`);
+  document.querySelectorAll('.overlay').item(document.querySelectorAll('.overlay').length-1)?.querySelector('.modal')?.classList.add('transaction-modal','atome-form-modal');
+}
+function submitWalletCashout(event,walletId){
+  event.preventDefault();
+  const wallet=walletById(walletId),input=document.getElementById('wallet-cashout-amount');
+  if(!wallet||!input) return;
+  const amount=Math.round(Number(input.value)*100)/100,saved=walletSavedBalance(walletId);
+  if(!Number.isFinite(amount)||amount<=0||amount>saved){alert(`Enter an amount from ₱0.01 to ${fmt(saved)}.`);return;}
+  state.transactions.push({id:uid(),amount,walletId,categoryId:null,date:todayStr(),note:'Cash out from saved balance',type:'expense',walletSavedCashout:true,walletCashoutDetached:true});
+  saveKey('transactions',state.transactions);
+  closeModal();
+  refreshWalletDetailsIfOpen(walletId);
+}
 function openWalletDetails(id){
   reconcileCreditPurchaseLoans();
   const wallet=walletById(id);
@@ -2696,8 +2727,8 @@ function openWalletDetails(id){
   const historyHTML=history.length?history.map(tx=>{
     const category=catById(tx.categoryId);
     const income=tx.type==='income'||(tx.type==='transfer'&&tx.transferDirection==='in');
-    const title=category?.name|| (tx.note?.match(/\[goal:([^\]]+)\]/)?.[1] ? 'Goal savings' : 'Uncategorized');
-    const note=String(tx.note||'').replace(/\[goal:[^\]]+\]/g,'').trim();
+    const title=tx.walletSavedCashout?'Savings cash out':category?.name|| (tx.note?.match(/\[goal:([^\]]+)\]/)?.[1] ? 'Goal savings' : 'Uncategorized');
+    const note=String(tx.note||'').replace(/\[(?:goal|goal-cashout):[^\]]+\]/g,'').trim();
     const date=tx.date?goalShortDate(tx.date):'Date unavailable';
     return `<div class="wallet-history-row"><div class="wallet-history-icon ${income?'income':'expense'}">${income?'↑':'↓'}</div><div class="wallet-history-copy"><div class="wallet-history-title">${esc(title)}</div><div class="wallet-history-meta">${date}${note?` · ${esc(note)}`:''}</div></div><div class="wallet-history-amount ${income?'income':'expense'}">${income?'+':'−'}${fmt(tx.amount)}</div></div>`;
   }).join(''):`<div class="wallet-history-empty">No income or expense records for this wallet yet.</div>`;
@@ -2717,7 +2748,7 @@ function openWalletDetails(id){
     document.querySelectorAll('.overlay').item(document.querySelectorAll('.overlay').length-1)?.querySelector('.modal')?.classList.add('wallet-details-modal');
     return;
   }
-  openModal(`<div class="modal-head"><h3>Wallet details</h3><button class="modal-close" aria-label="Close wallet details" onclick="closeModal()">&times;</button></div><div class="wallet-detail-hero"><div class="wallet-detail-name">${walletIconMarkup(wallet)}<span>${esc(wallet.name)}</span><div class="wallet-modal-tools"><button type="button" class="wallet-icon-action" aria-label="Edit ${esc(wallet.name)} wallet" title="Edit wallet" onclick="openWalletModal('${wallet.id}')">${ICONS.edit}</button></div></div><div class="wallet-total-label" style="margin-top:20px;">Total balance</div><div class="wallet-detail-total" style="color:${total<0?'var(--expense)':'var(--ink)'}">${fmt(total)}</div><div class="wallet-detail-breakdown"><div><span>Available</span><strong>${fmt(available)}</strong></div><button type="button" class="wallet-saved-trigger" aria-label="View savings by goal for ${esc(wallet.name)}" title="View savings by goal" onclick="openWalletSavings('${wallet.id}')"><span>Saved</span><strong>${fmt(saved)}</strong></button></div></div><button type="button" class="btn wallet-add-transaction" onclick="openTxModal('', '${wallet.id}')">${ICONS.plus} Add transaction</button><section class="wallet-history"><h4>Income &amp; expenses <span style="font:400 11px Inter,sans-serif;color:var(--ink-faint);">${history.length} record${history.length===1?'':'s'}</span></h4><div class="wallet-history-list">${historyHTML}</div></section>`);
+  openModal(`<div class="modal-head"><h3>Wallet details</h3><button class="modal-close" aria-label="Close wallet details" onclick="closeModal()">&times;</button></div><div class="wallet-detail-hero"><div class="wallet-detail-name">${walletIconMarkup(wallet)}<span>${esc(wallet.name)}</span><div class="wallet-modal-tools"><button type="button" class="wallet-icon-action" aria-label="Edit ${esc(wallet.name)} wallet" title="Edit wallet" onclick="openWalletModal('${wallet.id}')">${ICONS.edit}</button></div></div><div class="wallet-total-label" style="margin-top:20px;">Total balance</div><div class="wallet-detail-total" style="color:${total<0?'var(--expense)':'var(--ink)'}">${fmt(total)}</div><div class="wallet-detail-breakdown"><div><span>Available</span><strong>${fmt(available)}</strong></div><button type="button" class="wallet-saved-trigger" aria-label="View savings by goal for ${esc(wallet.name)}" title="View savings by goal" onclick="openWalletSavings('${wallet.id}')"><span>Saved</span><strong>${fmt(saved)}</strong></button></div></div><button type="button" class="btn secondary wallet-add-transaction" ${saved<=0?'disabled':''} onclick="openWalletCashoutModal('${wallet.id}')">Cash out saved balance</button><button type="button" class="btn wallet-add-transaction" onclick="openTxModal('', '${wallet.id}')">${ICONS.plus} Add transaction</button><section class="wallet-history"><h4>Income &amp; expenses <span style="font:400 11px Inter,sans-serif;color:var(--ink-faint);">${history.length} record${history.length===1?'':'s'}</span></h4><div class="wallet-history-list">${historyHTML}</div></section>`);
   document.querySelectorAll('.overlay').item(document.querySelectorAll('.overlay').length-1)?.querySelector('.modal')?.classList.add('wallet-details-modal');
 }
 window.openWalletDetails = openWalletDetails;
@@ -2745,6 +2776,7 @@ function renderGoals(){
     state.transactions.forEach(tx=>{
       if(!tx.note?.includes(`[goal:${g.id}]`)) return;
       const scheduled=tx.note.match(/\(scheduled (\d{4}-\d{2}-\d{2})\)/)?.[1];
+      if(g.scheduleResetDate&&(scheduled||tx.date||'')<g.scheduleResetDate) return;
       if(scheduled&&!completed.has(scheduled)) completed.set(scheduled,Number(tx.amount)||0);
     });
     const selected=new Set(g.weekDays||[]);
@@ -3134,6 +3166,7 @@ function openWalletModal(id){
   window._bankLogo = editing?.bankLogo || (editing?.icon==='bank' ? '' : (BANK_LOGOS.some(item=>item.id===editing?.icon) ? editing.icon : ''));
   window._walletType = iconType;
   window._walletAutoName = !editing;
+  window._walletEditing = Boolean(editing);
   openModal(walletModalMarkup(editing));
   const walletModal=[...document.querySelectorAll('.overlay')].at(-1)?.querySelector('.modal');
   walletModal?.classList.add('wallet-modal');
@@ -3141,13 +3174,20 @@ function openWalletModal(id){
   walletModal?.querySelector('#wallet-form')?.addEventListener('submit',(e)=>{
     e.preventDefault();
     const name = walletModal.querySelector('#w-name').value.trim();
-    const initial = parseFloat(walletModal.querySelector('#w-initial').value)||0;
+    const enteredBalance = parseFloat(walletModal.querySelector('#w-initial').value)||0;
+    const initial = editing&&!isCreditType(window._walletType)
+      ? Math.round((enteredBalance-(walletBalance(editing.id)-(Number(editing.initial)||0)))*100)/100
+      : enteredBalance;
+    const savedInput=walletModal.querySelector('#w-saved-balance');
+    const savedBalance=editing&&!isCreditType(window._walletType)?Number(savedInput?.value):null;
     if(!name){ alert('Enter a wallet name.'); return; }
+    if(savedBalance!==null&&(!Number.isFinite(savedBalance)||savedBalance<0)){alert('Saved balance must be zero or more.');return;}
     const cardLimit=Math.max(0,Number(walletModal.querySelector('#w-card-limit')?.value)||0);
     const cashLimit=Math.max(0,Number(walletModal.querySelector('#w-cash-limit')?.value)||0);
     const creditWallet=isCreditType(window._walletType),supportsCash=window._walletType==='atome';
     if(creditWallet&&(cardLimit<=0&&(!supportsCash||cashLimit<=0))){ alert(`Enter a spending limit for ${creditWalletName({icon:window._walletType})}.`); return; }
     const walletValues={name,initial:creditWallet?0:initial,icon:window._walletType,bankLogo:window._walletType==='bank'?window._bankLogo:'',cardLimit:creditWallet?cardLimit:0,cashLimit:supportsCash?cashLimit:0};
+    if(savedBalance!==null)walletValues.savedBalanceAdjustment=Math.round((savedBalance-walletSavedTransactionsBalance(editing.id))*100)/100;
     if(editing){ Object.assign(editing,walletValues); delete editing.color; }
     else{ state.wallets.push({id:uid(),...walletValues}); }
     saveKey('wallets', state.wallets);
@@ -3157,7 +3197,7 @@ function openWalletModal(id){
 function walletModalMarkup(editing){
   const type=WALLET_TYPES.find(item=>item.id===window._walletType)||BANK_LOGOS.find(item=>item.id===window._walletType)||OTHER_WALLET_ICONS.find(item=>item.id===window._walletType)||WALLET_TYPES[0];
   const name=editing?.name||type.name;
-  const initial=editing?.initial??0;
+  const initial=editing&&!isCreditType(window._walletType)?walletBalance(editing.id):(editing?.initial??0);
   const icon=walletIconMarkup({name,icon:window._walletType,bankLogo:window._bankLogo});
   return `
     <div class="modal-head"><h3>${editing?'Edit wallet':'Add wallet'}</h3><button type="button" class="modal-close" aria-label="Close wallet dialog" onclick="closeModal()">&times;</button></div>
@@ -3167,7 +3207,8 @@ function walletModalMarkup(editing){
         <div class="wallet-modal-preview"><span id="wallet-icon-preview">${icon}</span><div class="wallet-modal-preview-copy"><small>Wallet preview</small><strong id="wallet-preview-name">${esc(name)}</strong><span id="wallet-preview-type">${esc(type.name)}</span></div></div>
         <div class="field"><label for="w-name">Wallet name</label><input type="text" id="w-name" oninput="window._walletAutoName=false;updateWalletModalUI()" required maxlength="30" value="${editing?esc(editing.name):''}" placeholder="e.g. BPI Savings"></div>
         <div class="field"><label>Wallet icon</label><button type="button" id="wallet-type-trigger" class="wallet-modal-trigger" aria-label="Choose wallet icon" onclick="openWalletTypePicker()"><span id="wallet-type-icon">${icon}</span><span class="wallet-modal-trigger-copy"><strong id="wallet-type-name">${esc(type.name)}</strong><small>Tap to choose a wallet icon</small></span><svg class="wallet-modal-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button></div>
-        <div class="field" id="wallet-initial-field"><label for="w-initial">Starting balance (₱)</label><input type="number" step="0.01" id="w-initial" value="${initial}"></div>
+        <div class="field" id="wallet-initial-field"><label for="w-initial">${editing?'Total balance':'Starting balance'} (₱)</label><input type="number" step="0.01" id="w-initial" value="${initial}"></div>
+        ${editing?`<div class="field" id="wallet-saved-field"><label for="w-saved-balance">Saved balance (₱)</label><input type="number" min="0" step="0.01" id="w-saved-balance" value="${walletSavedBalance(editing.id).toFixed(2)}"><small style="display:block;color:var(--ink-faint);margin-top:6px;">Changing this only reallocates the wallet balance; goal progress and records stay unchanged.</small></div>`:''}
         <div id="atome-limit-fields" style="display:none"><div class="field"><label for="w-card-limit"><span id="w-card-limit-label">Credit spending limit</span> (₱)</label><input type="number" min="0" step="0.01" id="w-card-limit" value="${editing?.cardLimit||''}" placeholder="e.g. 20000"></div><div class="field" id="atome-cash-limit-field"><label for="w-cash-limit">Atome cash loan limit (₱)</label><input type="number" min="0" step="0.01" id="w-cash-limit" value="${editing?.cashLimit||''}" placeholder="e.g. 10000"></div><p class="wallet-modal-intro" style="padding:0;border:0;margin:-6px 0 12px;">Available limits decrease as you borrow and increase as you repay.</p></div>
       </div>
       <div class="wallet-modal-footer"><div class="modal-actions"><button type="button" class="btn secondary" onclick="closeModal()">Cancel</button><button type="submit" class="btn">${editing?'Save wallet':'Add wallet'}</button></div>${editing?`<button type="button" class="wallet-delete-action" onclick="deleteWallet('${editing.id}')">Delete wallet</button>`:''}</div>
@@ -3193,11 +3234,13 @@ function updateWalletModalUI(){
   const cashLimitField=document.getElementById('atome-cash-limit-field');
   const cardLimitLabel=document.getElementById('w-card-limit-label');
   const initialField=document.getElementById('wallet-initial-field');
+  const savedField=document.getElementById('wallet-saved-field');
   const intro=document.getElementById('wallet-modal-intro');
   if(limits) limits.style.display=creditWallet?'block':'none';
   if(cashLimitField) cashLimitField.style.display=supportsCash?'block':'none';
   if(cardLimitLabel) cardLimitLabel.textContent=supportsCash?'Atome card spending limit':`${creditWallet?creditWalletName({icon:window._walletType}):'Credit'} spending limit`;
   if(initialField) initialField.style.display=creditWallet?'none':'block';
+  if(savedField) savedField.style.display=creditWallet||!window._walletEditing?'none':'block';
   if(intro) intro.textContent=creditWallet?`Set the ${creditWalletName({icon:window._walletType})} spending limit. Purchases count as debt, not as an asset.`:'Add an account to keep your balances organized in one place.';
 }
 function openWalletTypePicker(){
@@ -3237,7 +3280,7 @@ function countGoalDepositCycles(startValue,endValue,cycle,cycleCount,weekDays=[]
   const dayDiff = Math.floor((endUtc-startUtc)/dayMs);
   if(cycle==='day') return Math.floor(dayDiff/interval);
   if(cycle==='week' && weekDays.length){
-    const first=new Date(start);first.setDate(first.getDate()+1);
+    const first=new Date(start);
     const last=new Date(end);last.setDate(last.getDate()-1);
     return countGoalWeekdaysInRange(goalDateString(first),goalDateString(last),weekDays,interval,startValue);
   }
@@ -3274,7 +3317,7 @@ function countGoalWeekdaysInRange(startValue,endValue,weekDays,cycleLimit=Infini
 function goalWeekCycleLimit(g){return g?.cycle==='week'?Math.max(1,parseInt(g.cycleCount,10)||1):Infinity;}
 function goalIsScheduledWeekday(g,dateValue){
   const date=goalDateValue(dateValue),start=goalDateValue(g?.startDate);
-  if(!date||!start||date<=start||!g?.weekDays?.includes(DAYS[date.getDay()])) return false;
+  if(!date||!start||date<start||!g?.weekDays?.includes(DAYS[date.getDay()])) return false;
   return Math.ceil(date.getDate()/7)<=goalWeekCycleLimit(g);
 }
 function goalMonthlyBudget(target,current,start,end,cycleCount=1){
@@ -3308,6 +3351,8 @@ function goalMonthSaved(g,monthKey){
   const tagged=`[goal:${g.id}]`;
   return state.transactions.filter(tx=>{
     const scheduledMonth=tx.note?.match(/\(scheduled (\d{4}-\d{2}-\d{2})\)/)?.[1]?.slice(0,7);
+    const scheduledDate=tx.note?.match(/\(scheduled (\d{4}-\d{2}-\d{2})\)/)?.[1];
+    if(g.scheduleResetDate&&(scheduledDate||tx.date||'')<g.scheduleResetDate) return false;
     if(tx.type!=='expense'||(scheduledMonth||tx.date?.slice(0,7))!==monthKey) return false;
     if(tx.note?.includes(tagged)) return true;
     return tx.note===`Contribution to: ${g.name}` || tx.note?.startsWith(`Periodic contribution to "${g.name}"`);
@@ -3594,7 +3639,7 @@ function openGoalModal(id){
     if(end<=start){ depositInput.value='';document.getElementById('g-monthly-deposit').value=''; estimate.textContent='Choose a target date after the start date.'; return; }
     if((cycle==='week'||splitMonthly)&&days.length===0){ depositInput.value='';document.getElementById('g-monthly-deposit').value=''; estimate.textContent='Choose at least one deposit day.'; return; }
     if(weeklySelected){
-      const months=countGoalDepositCycles(start,end,'month',1,[]);
+      const months=Math.max(1,countGoalDepositCycles(start,end,'month',1,[]));
       const existingMonthlyAmount=Number(editing?.monthlyDeposit)||(editing?.cycle==='month'?Number(editing.deposit):0);
       const startDateForEnd=goalDateValue(start);
       const automaticEndDate=startDateForEnd?goalDateString(addGoalMonths(startDateForEnd,cycleCount,startDateForEnd.getDate())):'';
@@ -3604,7 +3649,7 @@ function openGoalModal(id){
       const monthEnd=new Date(startDate.getFullYear(),startDate.getMonth()+1,0);
       const lastPlanDay=goalDateValue(end);lastPlanDay.setDate(lastPlanDay.getDate()-1);
       const rangeEnd=lastPlanDay<monthEnd?lastPlanDay:monthEnd;
-      const firstDepositStart=new Date(startDate);firstDepositStart.setDate(firstDepositStart.getDate()+1);
+      const firstDepositStart=new Date(startDate);
       const weeks=countGoalWeekdaysInRange(goalDateString(firstDepositStart),goalDateString(rangeEnd),days,cycle==='week'?cycleCount:Infinity);
       if(!months||!weeks){depositInput.value='';document.getElementById('g-monthly-deposit').value='';estimate.textContent='No selected deposit days fit before the target date.';return;}
       const weeklyAmount=Math.ceil((monthlyAmount/weeks)*100)/100;
@@ -3656,7 +3701,7 @@ function openGoalModal(id){
         const firstMonthEnd=new Date(start.getFullYear(),start.getMonth()+1,0);
         const end=goalDateValue(targetDate);end.setDate(end.getDate()-1);
         const firstRangeEnd=end<firstMonthEnd?end:firstMonthEnd;
-        const firstDepositStart=new Date(start);firstDepositStart.setDate(firstDepositStart.getDate()+1);
+        const firstDepositStart=new Date(start);
         const firstMonthCycles=countGoalWeekdaysInRange(goalDateString(firstDepositStart),goalDateString(firstRangeEnd),weekDays,cycleCount,startDate);
         if(!firstMonthCycles && current<target){alert('No selected deposit days fit in the first month. Choose a later target date.');return;}
         deposit=current>=target?0:Math.min(Math.ceil((monthlyDeposit/firstMonthCycles)*100)/100,Math.max(0,target-current));
@@ -3669,7 +3714,9 @@ function openGoalModal(id){
     if(editing){
       Object.assign(editing, {name, icon, target, type, deposit, monthlyDeposit, cycle, cycleCount, startDate, targetDate, weekDays, splitWeekly});
     } else {
-      state.goals.push({id:uid(), name, icon, target, type, deposit, monthlyDeposit, cycle, cycleCount, startDate, targetDate, weekDays, splitWeekly, current, lastContribution:startDate});
+      const initialLastContribution=goalDateValue(startDate);
+      initialLastContribution.setDate(initialLastContribution.getDate()-1);
+      state.goals.push({id:uid(), name, icon, target, type, deposit, monthlyDeposit, cycle, cycleCount, startDate, targetDate, weekDays, splitWeekly, current, lastContribution:goalDateString(initialLastContribution)});
     }
     saveKey('goals', state.goals);
     closeModal(); render();
